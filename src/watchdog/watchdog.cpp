@@ -3,17 +3,26 @@
 // Installs global low-level keyboard/mouse hooks that block INJECTED input
 // aimed at protected screen regions. Human input always passes through.
 //
-// Safety contract (see .omo/plans/mcp-windows-debug.md todo 6):
+// Safety contract (see .omo/plans/mcp-windows-debug.md todos 6 and 7):
 //   * Never log keystroke/button content - only the injected flag + cursor
 //     destination are inspected.
-//   * Dead-man switch: a bare named pipe (`\\.\pipe\McpWatchdog-<id>`)
-//     carries heartbeats. If none arrives for > 2 s, unhook and exit so a
-//     crashed Node MCP can never leave input blocked.
+//   * Dead-man switch: a named pipe (`\\.\pipe\McpWatchdog-<id>`) carries
+//     heartbeats. If none arrives for > 2 s, unhook and exit so a crashed
+//     Node MCP can never leave input blocked.
 //   * Runs as admin only; non-admin prints ERROR_ACCESS_DENIED and exits 1.
 //
-// TODO 7 will add the formal REGISTER_REGION/STATUS/SHUTDOWN protocol on the
-// same pipe. This scaffold only supports `--test-region` + the bare
-// heartbeat pipe.
+// IPC protocol (newline-delimited JSON on the same pipe):
+//   * First frame from a client MUST be `{"token":"<hex>"}` matching the
+//     WATCHDOG_TOKEN env var (an empty token disables auth). Until a matching
+//     token is presented, every other frame is rejected and the connection
+//     is closed.
+//   * `{"op":"REGISTER_REGION","x":..,"y":..,"w":..,"h":..,"id":".."}` appends
+//     a protected region. Regions are append-only for the session lifetime -
+//     there is deliberately NO UNREGISTER_REGION.
+//   * `{"op":"HEARTBEAT"}` refreshes the dead-man switch. Any bare byte still
+//     counts as a heartbeat too (scaffold compatibility).
+//   * `{"op":"STATUS"}` replies `{"hooked":bool,"regions":N}`.
+//   * `{"op":"SHUTDOWN"}` unhooks and exits cleanly.
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -33,14 +42,20 @@ static HHOOK g_hKeyboardHook = nullptr;
 static HHOOK g_hMouseHook = nullptr;
 static HANDLE g_hPipe = INVALID_HANDLE_VALUE;
 static HANDLE g_hPipeThread = nullptr;
+static HWND g_hwnd = nullptr;
 
-// Protected regions, in screen coordinates (physical pixels). Read-only after
-// startup: LL hook procs run on the installing thread's message loop (main
-// thread), so no locking is required for the test-region case.
+// Token required to authenticate a pipe client (read from WATCHDOG_TOKEN env).
+// Empty => authentication disabled (bare-heartbeat scaffold compatibility).
+static std::string g_token;
+
+// Protected regions, in screen coordinates (physical pixels). The pipe thread
+// appends (REGISTER_REGION) while the LL hook procs (main thread) read via
+// PointInRegions, so access is guarded by g_regionsLock.
 struct Region {
     LONG x, y, w, h;
 };
 static std::vector<Region> g_regions;
+static SRWLOCK g_regionsLock = SRWLOCK_INIT;
 
 // Heartbeat state. Updated by the pipe thread, read by the main thread.
 static std::atomic<unsigned long long> g_lastHeartbeat{ 0 };
@@ -64,11 +79,14 @@ static void UpdateMaxProcUs(LARGE_INTEGER t0, LARGE_INTEGER t1) {
 }
 
 static bool PointInRegions(LONG px, LONG py) {
+    AcquireSRWLockShared(&g_regionsLock);
     for (const Region& r : g_regions) {
         if (px >= r.x && px < r.x + r.w && py >= r.y && py < r.y + r.h) {
+            ReleaseSRWLockShared(&g_regionsLock);
             return true;
         }
     }
+    ReleaseSRWLockShared(&g_regionsLock);
     return false;
 }
 
@@ -172,10 +190,160 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 }
 
 // ---------------------------------------------------------------------------
-// Heartbeat pipe thread
+// IPC pipe thread: token auth + newline-delimited JSON protocol
 // ---------------------------------------------------------------------------
 
-static DWORD WINAPI HeartbeatThread(LPVOID /*unused*/) {
+// Write a NUL-terminated reply to the connected pipe. Called from the pipe
+// thread only, where g_hPipe is valid.
+static void WritePipe(const char* s) {
+    DWORD n = 0;
+    WriteFile(g_hPipe, s, static_cast<DWORD>(std::strlen(s)), &n, nullptr);
+}
+
+// Skip ASCII whitespace (space, tab, CR, LF).
+static void SkipWs(const std::string& s, size_t& i) {
+    while (i < s.size() &&
+           (s[i] == ' ' || s[i] == '\t' || s[i] == '\r' || s[i] == '\n')) {
+        ++i;
+    }
+}
+
+// Extract the string value of a top-level `"key":` pair from a flat JSON
+// object. Values we emit are alphanumeric (tokens, ids) with no escapes, so a
+// simple quote-to-quote scan suffices. Returns false if absent/malformed.
+static bool JsonGetString(const std::string& s, const char* key, std::string& out) {
+    std::string needle = "\"";
+    needle += key;
+    needle += "\"";
+    size_t i = s.find(needle);
+    if (i == std::string::npos) {
+        return false;
+    }
+    i += needle.size();
+    SkipWs(s, i);
+    if (i >= s.size() || s[i] != ':') {
+        return false;
+    }
+    ++i;
+    SkipWs(s, i);
+    if (i >= s.size() || s[i] != '"') {
+        return false;
+    }
+    ++i;
+    size_t start = i;
+    while (i < s.size() && s[i] != '"') {
+        ++i;
+    }
+    if (i >= s.size()) {
+        return false;
+    }
+    out = s.substr(start, i - start);
+    return true;
+}
+
+// Extract the integer value of a top-level `"key":` pair.
+static bool JsonGetInt(const std::string& s, const char* key, long& out) {
+    std::string needle = "\"";
+    needle += key;
+    needle += "\"";
+    size_t i = s.find(needle);
+    if (i == std::string::npos) {
+        return false;
+    }
+    i += needle.size();
+    SkipWs(s, i);
+    if (i >= s.size() || s[i] != ':') {
+        return false;
+    }
+    ++i;
+    SkipWs(s, i);
+    if (i >= s.size()) {
+        return false;
+    }
+    char* end = nullptr;
+    long v = strtol(s.c_str() + i, &end, 10);
+    if (end == s.c_str() + i) {
+        return false;
+    }
+    out = v;
+    return true;
+}
+
+// Handle one complete JSON frame. Returns false to close the connection.
+static bool HandleLine(const std::string& line, bool& authenticated) {
+    if (line.empty()) {
+        return true; // bare newline: heartbeat only (already counted)
+    }
+
+    if (!authenticated) {
+        // The only acceptable pre-auth frame is the correct token.
+        std::string tok;
+        if (JsonGetString(line, "token", tok) && tok == g_token) {
+            authenticated = true;
+            WritePipe("{\"ok\":true,\"op\":\"AUTH\"}\n");
+            return true;
+        }
+        WritePipe("{\"ok\":false,\"error\":\"unauthorized\"}\n");
+        return false; // reject: disconnect, keep listening for a valid client
+    }
+
+    std::string op;
+    if (!JsonGetString(line, "op", op)) {
+        return true; // not a command frame (e.g. bare-byte heartbeat)
+    }
+
+    if (op == "REGISTER_REGION") {
+        long x = 0, y = 0, w = 0, h = 0;
+        std::string id;
+        if (JsonGetInt(line, "x", x) && JsonGetInt(line, "y", y) &&
+            JsonGetInt(line, "w", w) && JsonGetInt(line, "h", h) &&
+            JsonGetString(line, "id", id)) {
+            if (w <= 0 || h <= 0) {
+                WritePipe("{\"ok\":false,\"op\":\"REGISTER_REGION\",\"error\":\"invalid region\"}\n");
+                return true;
+            }
+            Region r{};
+            r.x = static_cast<LONG>(x);
+            r.y = static_cast<LONG>(y);
+            r.w = static_cast<LONG>(w);
+            r.h = static_cast<LONG>(h);
+            AcquireSRWLockExclusive(&g_regionsLock);
+            g_regions.push_back(r);
+            ReleaseSRWLockExclusive(&g_regionsLock);
+            WritePipe("{\"ok\":true,\"op\":\"REGISTER_REGION\"}\n");
+            return true;
+        }
+        WritePipe("{\"ok\":false,\"op\":\"REGISTER_REGION\",\"error\":\"bad payload\"}\n");
+        return true;
+    }
+
+    if (op == "HEARTBEAT") {
+        g_lastHeartbeat.store(GetTickCount64());
+        return true; // no reply
+    }
+
+    if (op == "STATUS") {
+        AcquireSRWLockShared(&g_regionsLock);
+        size_t nregions = g_regions.size();
+        ReleaseSRWLockShared(&g_regionsLock);
+        bool hooked = (g_hKeyboardHook != nullptr && g_hMouseHook != nullptr);
+        char reply[64];
+        std::snprintf(reply, sizeof(reply), "{\"hooked\":%s,\"regions\":%zu}\n",
+                      hooked ? "true" : "false", nregions);
+        WritePipe(reply);
+        return true;
+    }
+
+    if (op == "SHUTDOWN") {
+        WritePipe("{\"ok\":true,\"op\":\"SHUTDOWN\"}\n");
+        PostMessageW(g_hwnd, WM_QUIT, 0, 0);
+        return false;
+    }
+
+    return true; // unknown op: ignore, still counts as a heartbeat
+}
+
+static DWORD WINAPI PipeThread(LPVOID /*unused*/) {
     // g_hPipe is created by main before this thread starts.
     while (g_running.load()) {
         BOOL ok = ConnectNamedPipe(g_hPipe, nullptr);
@@ -194,14 +362,32 @@ static DWORD WINAPI HeartbeatThread(LPVOID /*unused*/) {
             break;
         }
 
-        char buf[64];
+        bool authenticated = g_token.empty(); // no token configured => open
+        std::string line;
+        char buf[256];
+
         for (;;) {
             DWORD n = 0;
             BOOL r = ReadFile(g_hPipe, buf, sizeof(buf), &n, nullptr);
             if (r && n > 0) {
-                // ANY byte read == heartbeat. Content is irrelevant and never
-                // logged or inspected.
+                // ANY byte read refreshes the dead-man switch (bare-byte
+                // heartbeat compatibility). Content is never logged.
                 g_lastHeartbeat.store(GetTickCount64());
+                for (DWORD i = 0; i < n; ++i) {
+                    char c = buf[i];
+                    if (c == '\n') {
+                        if (!line.empty() && line.back() == '\r') {
+                            line.pop_back();
+                        }
+                        bool keep = HandleLine(line, authenticated);
+                        line.clear();
+                        if (!keep) {
+                            break;
+                        }
+                    } else {
+                        line.push_back(c);
+                    }
+                }
             }
             if (!r) {
                 DWORD err = GetLastError();
@@ -310,6 +496,17 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Read the pipe-auth token from the environment (never argv, which any
+    // same-user process could read). Empty => authentication disabled.
+    {
+        char tokenBuf[256]{};
+        DWORD tokenLen = GetEnvironmentVariableA("WATCHDOG_TOKEN", tokenBuf,
+                                                 sizeof(tokenBuf));
+        if (tokenLen > 0 && tokenLen < sizeof(tokenBuf)) {
+            g_token.assign(tokenBuf, tokenLen);
+        }
+    }
+
     // Message-only window + message loop so LL hooks dispatch on this thread.
     WNDCLASSW wc{};
     wc.lpfnWndProc = WndProc;
@@ -329,6 +526,7 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "CreateWindowExW failed: %lu\n", GetLastError());
         return 1;
     }
+    g_hwnd = hwnd; // the pipe thread posts WM_QUIT here on SHUTDOWN
 
     // Install global low-level hooks. LL hooks do NOT require a separate DLL;
     // the hook proc lives in this EXE. hMod = our module, dwThreadId = 0 (all).
@@ -353,15 +551,16 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    g_hPipeThread = CreateThread(nullptr, 0, HeartbeatThread, nullptr, 0, nullptr);
+    g_hPipeThread = CreateThread(nullptr, 0, PipeThread, nullptr, 0, nullptr);
     if (!g_hPipeThread) {
         std::fprintf(stderr, "CreateThread failed: %lu\n", GetLastError());
         Cleanup();
         return 1;
     }
 
-    std::printf("[watchdog] elevated=yes hooks=keyboard+mouse pipe=%s regions=%zu\n",
-                pipePath.c_str(), g_regions.size());
+    std::printf("[watchdog] elevated=yes hooks=keyboard+mouse pipe=%s regions=%zu auth=%s\n",
+                pipePath.c_str(), g_regions.size(),
+                g_token.empty() ? "off" : "token");
     for (const Region& r : g_regions) {
         std::printf("[watchdog]   region x=%ld y=%ld w=%ld h=%ld\n", r.x, r.y, r.w, r.h);
     }

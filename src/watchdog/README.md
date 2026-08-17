@@ -47,6 +47,47 @@ crashed Node MCP can never leave input blocked. A background thread accepts the
 connection and reads; a message-loop timer (200 ms) on the main thread checks
 the elapsed time.
 
+## IPC protocol (todo 7)
+
+The same pipe carries a newline-delimited JSON protocol. Each frame is one JSON
+object terminated by `\n`. The Node client is `WatchdogClient` in `src/ipc.ts`.
+
+### Authentication
+
+The watchdog reads the expected token from the `WATCHDOG_TOKEN` environment
+variable (never argv — argv is readable by any same-user process). The first
+frame a client sends after connecting MUST be:
+
+```json
+{"token":"<hex>"}
+```
+
+If it matches, the watchdog replies `{"ok":true,"op":"AUTH"}` and enables the
+command frames below. A mismatch (or any other pre-auth frame) is answered with
+`{"ok":false,"error":"unauthorized"}` and the connection is closed. If
+`WATCHDOG_TOKEN` is unset/empty, authentication is disabled (any client may
+connect — used by the bare-heartbeat scaffold).
+
+### Commands (client -> watchdog)
+
+| Frame | Effect | Reply |
+|-------|--------|-------|
+| `{"op":"REGISTER_REGION","x":..,"y":..,"w":..,"h":..,"id":".."}` | Append a protected region | `{"ok":true,"op":"REGISTER_REGION"}` or `{"ok":false,...,"error":"..."}` |
+| `{"op":"HEARTBEAT"}` | Refresh the dead-man switch | none |
+| `{"op":"STATUS"}` | Report state | `{"hooked":true/false,"regions":N}` |
+| `{"op":"SHUTDOWN"}` | Unhook and exit cleanly | `{"ok":true,"op":"SHUTDOWN"}` then pipe close |
+
+Regions are **append-only** for the session lifetime; there is deliberately no
+`UNREGISTER_REGION` (the AI must not be able to remove its own constraints).
+
+### Token generation (Node)
+
+```ts
+import { generateToken } from '../src/ipc';
+const token = generateToken(); // crypto.randomBytes(32).toString('hex')
+// spawn watchdog with env WATCHDOG_TOKEN = token
+```
+
 ## Safety notes
 
 - Keystroke/button content is **never** read or logged; only the injected flag
@@ -56,11 +97,12 @@ the elapsed time.
   max observed proc time is measured with `QueryPerformanceCounter` and printed
   on exit.
 - Transport is named pipe only. No TCP.
+- `WATCHDOG_TOKEN` is the only authentication channel; the token is passed via
+  the process environment and presented as the first JSON frame after connect.
 
-## Handoff to todo 7
+## Handoff to todo 8
 
-Todo 7 replaces the `--test-region` scaffold with the formal
-`REGISTER_REGION`/`STATUS`/`SHUTDOWN` IPC protocol on the **same pipe**, plus a
-random-token handshake so only the Node MCP can connect. The hook/region/
-dead-man machinery in this file is designed to carry over unchanged; only the
-pipe-thread read loop and region registration path will be extended.
+Todo 8 spawns the watchdog (elevated) with `WATCHDOG_TOKEN` set, connects a
+`WatchdogClient`, registers the session's protected regions, and runs a 1 s
+heartbeat loop. The `--test-region` flag remains only as a manual smoke-test
+aid; the Node MCP always registers regions over the pipe.
