@@ -36,6 +36,7 @@ import { z } from 'zod/v3';
 
 import { WindowsFileProvider, type FileAccessMode } from './filesystem';
 import { WindowsInputProvider } from './input';
+import { Orchestrator, createRealWindowProbe } from './orchestrator';
 import type { FileProvider } from './platform/file';
 import type { InputProvider } from './platform/input';
 import type { ScreenProvider } from './platform/screen';
@@ -65,6 +66,8 @@ export interface BuildServerOptions {
   screenProvider?: ScreenProvider;
   inputProvider?: InputProvider;
   safety?: DebugSessionManager;
+  /** The auto-debug orchestrator; constructed (and wired) by default. */
+  orchestrator?: Orchestrator;
 }
 
 /** Extract a human-readable message from any thrown value. */
@@ -125,6 +128,26 @@ export function buildServer(options: BuildServerOptions = {}): McpServer {
   // The active session handle, so `end_debug_session` can delegate to the
   // safety manager with the exact handle `start_debug_session` returned.
   let activeHandle: DebugSessionHandle | null = null;
+
+  // The auto-debug orchestrator (todo 10): monitors the session target window
+  // and exposes its latest context via `debug://context`. On a 30-minute cap
+  // auto-end, it notifies `session_end` — the handler tears down the safety
+  // session so the whole debug session, not just the loop, terminates.
+  const orchestrator =
+    options.orchestrator ??
+    new Orchestrator({
+      sessionId,
+      safety,
+      input,
+      screen: screens,
+      probe: createRealWindowProbe(),
+      onNotify: (event) => {
+        if (event.type === 'session_end' && activeHandle) {
+          void safety.endDebugSession(activeHandle).catch(() => {});
+          activeHandle = null;
+        }
+      },
+    });
 
   /**
    * The ONLY path for the four injection tools: wraps the raw provider call in
@@ -266,6 +289,14 @@ export function buildServer(options: BuildServerOptions = {}): McpServer {
       try {
         const handle = await safety.startDebugSession(regions);
         activeHandle = handle;
+        // Best-effort: begin auto-monitoring the current foreground window.
+        // If no target window is resolvable, the session still works manually.
+        try {
+          orchestrator.stop();
+          orchestrator.start();
+        } catch {
+          // Logged inside the orchestrator; a monitorless session is still valid.
+        }
         return {
           content: [
             {
@@ -297,6 +328,7 @@ export function buildServer(options: BuildServerOptions = {}): McpServer {
         }
         await safety.endDebugSession(handle);
         activeHandle = null;
+        orchestrator.stop();
         return { content: [{ type: 'text', text: 'debug session ended' }] };
       } catch (err) {
         return toolError(err);
@@ -304,26 +336,23 @@ export function buildServer(options: BuildServerOptions = {}): McpServer {
     },
   );
 
-  // -- Orchestration stub (todo 10) -------------------------------------------
+  // -- Orchestration (todo 10) -------------------------------------------------
 
   server.registerTool(
     'execute_action',
     {
       description:
-        'Execute a client-decided action within the active debug session (routed through the safety gate).',
+        'Execute a client-decided action within the active debug session (routed through the orchestrator governor + freshness gate + safety guard).',
       inputSchema: { action: z.string(), params: z.record(z.unknown()).optional() },
     },
-    ({ action }) =>
-      safety
-        .injectGuarded(async () => {
-          // The full orchestrator dispatch lands in todo 10.
-        })
-        .then(() =>
-          okResult(
-            `execute_action(${JSON.stringify(action)}) accepted — orchestrator dispatch is todo 10`,
-          ),
-        )
-        .catch((err: unknown) => toolError(err)),
+    async ({ action, params }) => {
+      try {
+        await orchestrator.executeAction(action, params ?? {});
+        return okResult(`execute_action(${JSON.stringify(action)}) executed`);
+      } catch (err) {
+        return toolError(err);
+      }
+    },
   );
 
   // -- Resources --------------------------------------------------------------
@@ -371,7 +400,7 @@ export function buildServer(options: BuildServerOptions = {}): McpServer {
     'debug://context',
     {
       title: 'Debug context',
-      description: 'Current auto-debug loop context (filled in by todo 10).',
+      description: 'Current auto-debug loop context (latest trigger, screenshot, governor state).',
       mimeType: 'application/json',
     },
     async (uri): Promise<ReadResourceResult> => ({
@@ -379,11 +408,7 @@ export function buildServer(options: BuildServerOptions = {}): McpServer {
         {
           uri: uri.toString(),
           mimeType: 'application/json',
-          text: JSON.stringify({
-            status: 'idle',
-            sessionState: safety.state,
-            note: 'orchestrator not wired (todo 10)',
-          }),
+          text: JSON.stringify(orchestrator.getContext()),
         },
       ],
     }),
