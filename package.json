@@ -1,0 +1,25 @@
+{
+  "name": "mcp-windows-debug",
+  "version": "0.1.0",
+  "description": "Windows MCP server for screenshot capture, input injection, file read, and auto-debugging with dual-process safety",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest",
+    "dev": "tsc -w"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "koffi": "3.1.4",
+    "node-screenshots": "^0.2.8",
+    "zod": "^3.24.4"
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22.10.2",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.5",
+    "typescript": "^5.7.2"
+  }
+}
