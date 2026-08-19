@@ -132,6 +132,11 @@ export interface WindowDeps {
   ): { left: number; top: number; right: number; bottom: number } | null;
 }
 
+export interface SandboxGate {
+  isWindow(hwnd: number): boolean;
+  getThreadDesktop(hwnd: number): unknown;
+}
+
 export interface DebugSessionManagerOptions {
   /** The MCP session id (also used as the watchdog named-pipe id). */
   sessionId: string;
@@ -141,6 +146,8 @@ export interface DebugSessionManagerOptions {
   spawnWatchdog?: SpawnWatchdogFn;
   /** Win32 seam for the window-scoping gate; defaults to koffi user32. */
   win32?: WindowDeps;
+  /** Sandbox gate seam; defaults to koffi user32 IsWindow+GetThreadDesktop. */
+  sandboxGate?: SandboxGate;
   /** Releases any held modifiers on teardown; defaults to a no-op. */
   releaseModifiers?: () => void | Promise<void>;
   /** Heartbeat interval in ms (default 1000). */
@@ -198,6 +205,32 @@ function ensureRealWindowDeps(): WindowDeps {
     realWindowDepsContext = { deps: createRealWindowDeps() };
   }
   return realWindowDepsContext.deps;
+}
+
+// ---------------------------------------------------------------------------
+// Sandbox-aware hwnd-validity gate (koffi → user32)
+// ---------------------------------------------------------------------------
+
+let sandboxGateContext: { isWindow: (hwnd: number) => boolean; getThreadDesktop: (hwnd: number) => unknown } | undefined;
+
+function ensureSandboxGate(): { isWindow: (hwnd: number) => boolean; getThreadDesktop: (hwnd: number) => unknown } {
+  if (!sandboxGateContext) {
+    const user32 = koffi.load('user32.dll');
+    const IsWindow = user32.func('bool IsWindow(void *hWnd)');
+    const GetWindowThreadProcessId = user32.func('uint32 GetWindowThreadProcessId(void *hWnd, void *lpdwProcessId)');
+    const GetThreadDesktop = user32.func('void * GetThreadDesktop(uint32 dwThreadId)');
+    sandboxGateContext = {
+      isWindow(hwnd: number): boolean {
+        return IsWindow(BigInt(hwnd));
+      },
+      getThreadDesktop(hwnd: number): unknown {
+        const pidBuf = Buffer.alloc(4);
+        const threadId = GetWindowThreadProcessId(BigInt(hwnd), pidBuf);
+        return GetThreadDesktop(threadId);
+      },
+    };
+  }
+  return sandboxGateContext;
 }
 
 // ---------------------------------------------------------------------------
@@ -267,6 +300,10 @@ interface ActiveSession {
   client: WatchdogClientLike;
   proc: SpawnedProcess | null;
   targetWindow: number | null;
+  /** When true, injectGuarded uses hwnd-validity gate instead of cursorAndFocusInside. */
+  sandboxMode: boolean;
+  /** Private desktop handle for sandbox desktop-membership check. */
+  sandboxDesktopHandle: unknown;
 }
 
 export class DebugSessionManager {
@@ -274,6 +311,7 @@ export class DebugSessionManager {
   private readonly clientFactory: ClientFactory;
   private readonly spawnWatchdog: SpawnWatchdogFn;
   private readonly win32: WindowDeps;
+  private readonly sandboxGate: SandboxGate;
   private readonly releaseModifiers: () => void | Promise<void>;
   private readonly heartbeatIntervalMs: number;
   private readonly killGraceMs: number;
@@ -289,6 +327,7 @@ export class DebugSessionManager {
     this.spawnWatchdog =
       options.spawnWatchdog ?? defaultSpawnWatchdog(options.watchdogExePath ?? defaultWatchdogExePath());
     this.win32 = options.win32 ?? ensureRealWindowDeps();
+    this.sandboxGate = options.sandboxGate ?? ensureSandboxGate();
     this.releaseModifiers = options.releaseModifiers ?? (() => {});
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? 1000;
     this.killGraceMs = options.killGraceMs ?? 1000;
@@ -364,7 +403,7 @@ export class DebugSessionManager {
       }
       await client.registerRegions(regions);
 
-      this.active = { handle, client, proc, targetWindow: null };
+      this.active = { handle, client, proc, targetWindow: null, sandboxMode: false, sandboxDesktopHandle: null };
       this.transition('ACTIVE');
       this.startHeartbeat();
       this.log(
@@ -427,6 +466,14 @@ export class DebugSessionManager {
     if (this.active) this.active.targetWindow = hwnd;
   }
 
+  /** Enable sandbox mode for the active session: hwnd-validity gate replaces cursorAndFocusInside. */
+  setSandboxMode(desktopHandle: unknown): void {
+    if (this.active) {
+      this.active.sandboxMode = true;
+      this.active.sandboxDesktopHandle = desktopHandle;
+    }
+  }
+
   /**
    * Window-scoping gate: every input tool must route through here. Refuses
    * unless a session is ACTIVE and the cursor + keyboard focus are inside the
@@ -447,9 +494,18 @@ export class DebugSessionManager {
       this.log('inject_guarded', { error: 'no target window' }, false);
       throw new WindowScopeViolationError('no target window registered for the active session');
     }
-    if (!this.cursorAndFocusInside(target)) {
-      this.log('inject_guarded', { targetWindow: target, error: 'WindowScopeViolationError' }, false);
-      throw new WindowScopeViolationError();
+    // Sandbox mode: hwnd-validity gate (IsWindow + desktop membership),
+    // NOT cursorAndFocusInside (which queries the Default desktop's foreground/cursor).
+    if (session.sandboxMode) {
+      if (!this.hwndIsValidOnDesktop(target, session.sandboxDesktopHandle)) {
+        this.log('inject_guarded', { targetWindow: target, error: 'WindowScopeViolationError', sandboxMode: true }, false);
+        throw new WindowScopeViolationError('sandbox target window is invalid or not on the private desktop');
+      }
+    } else {
+      if (!this.cursorAndFocusInside(target)) {
+        this.log('inject_guarded', { targetWindow: target, error: 'WindowScopeViolationError' }, false);
+        throw new WindowScopeViolationError();
+      }
     }
     try {
       const result = await action();
@@ -474,6 +530,14 @@ export class DebugSessionManager {
       cursor.y >= rect.top &&
       cursor.y <= rect.bottom
     );
+  }
+
+  private hwndIsValidOnDesktop(target: number, desktopHandle: unknown): boolean {
+    const gate = this.sandboxGate;
+    if (!gate.isWindow(target)) return false;
+    if (desktopHandle === null || desktopHandle === undefined) return true; // no desktop check if handle not set
+    const threadDesktop = gate.getThreadDesktop(target);
+    return threadDesktop === desktopHandle;
   }
 
   private startHeartbeat(): void {
