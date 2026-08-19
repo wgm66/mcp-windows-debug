@@ -228,10 +228,30 @@ function createRealWindowProbe(): WindowProbe {
     'void * OpenInputDesktop(uint32 dwFlags, bool fInherit, uint32 dwDesiredAccess)',
   );
   const CloseDesktop = user32.func('bool CloseDesktop(void *hDesktop)');
+  const GetUserObjectInformationA = user32.func(
+    'bool GetUserObjectInformationA(void *hObj, int32 nIndex, void *pvInfo, uint32 nLength, uint32 *lpnLengthNeeded)',
+  );
 
   const DESKTOP_READOBJECTS = 0x0001;
-  // Baseline: the input desktop the process started on.
-  const sessionDesktop = OpenInputDesktop(0, false, DESKTOP_READOBJECTS);
+  // UFI_NAME = 2 (returned by GetUserObjectInformationA with nIndex=2).
+  const UFI_NAME = 2;
+
+  /** Read the name of a desktop handle as an ANSI string. */
+  function desktopName(h: unknown): string {
+    if (h === null || h === undefined) return '';
+    const buf = Buffer.alloc(256);
+    const lenBuf = Buffer.alloc(4);
+    if (!GetUserObjectInformationA(h, UFI_NAME, buf, 256, lenBuf)) return '';
+    const end = buf.indexOf(0);
+    return buf.toString('latin1', 0, end < 0 ? 256 : end);
+  }
+
+  // Baseline: the NAME of the input desktop the process started on.
+  // Comparing handles is wrong because each OpenInputDesktop call returns a
+  // fresh HDESK even for the same desktop; names are stable identifiers.
+  const baselineHandle = OpenInputDesktop(0, false, DESKTOP_READOBJECTS);
+  const baselineName = desktopName(baselineHandle);
+  if (baselineHandle) CloseDesktop(baselineHandle);
 
   return {
     getWindowText(hwnd: number): string {
@@ -255,9 +275,9 @@ function createRealWindowProbe(): WindowProbe {
     isSecureDesktop(): boolean {
       const now = OpenInputDesktop(0, false, DESKTOP_READOBJECTS);
       if (now === null) return true; // cannot read the input desktop → fail closed
-      const secure = now !== sessionDesktop;
+      const nowName = desktopName(now);
       CloseDesktop(now);
-      return secure;
+      return nowName !== baselineName;
     },
   };
 }
