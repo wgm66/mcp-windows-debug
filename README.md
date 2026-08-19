@@ -104,7 +104,11 @@ move one after start.
 
 **Start the session.** `start_debug_session` spawns or attaches the watchdog,
 registers every region, and starts the heartbeat. The orchestrator begins
-monitoring the current foreground window as the debug target.
+monitoring the current foreground window as the debug target. Pass
+`sandbox: 'desktop'` to run injection on a private Win32 desktop
+(PostMessage-based, user's real mouse/keyboard untouched) instead of
+`SendInput` (which moves the real cursor). `sandbox: 'rdp'` is reserved but
+not implemented in v1.
 
 **The auto-debug loop.** While the session is active, the orchestrator polls the
 target window for changes: title, rectangle, foreground status, and optionally a
