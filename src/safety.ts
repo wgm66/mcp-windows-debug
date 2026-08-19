@@ -346,7 +346,22 @@ export class DebugSessionManager {
     try {
       proc = await this.spawnWatchdog({ pipeId, token });
       client = this.clientFactory(pipeId, token);
-      await client.connect();
+      if (proc === null) {
+        // Pre-started-admin fallback: no process to watch, just connect.
+        await client.connect();
+      } else {
+        // Race the connect against the watchdog's exit. A non-elevated watchdog
+        // exits (ERROR_ACCESS_DENIED) before ever creating the named pipe, so
+        // the raw connect() would otherwise fail with ENOENT after a 10s retry.
+        await Promise.race([
+          client.connect(),
+          proc.exited.then(() => {
+            throw new ElevationRequiredError(
+              'watchdog exited before connecting; run OpenCode elevated or pre-start the watchdog as admin',
+            );
+          }),
+        ]);
+      }
       await client.registerRegions(regions);
 
       this.active = { handle, client, proc, targetWindow: null };

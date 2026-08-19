@@ -335,6 +335,37 @@ describe('DebugSessionManager state machine', () => {
     await manager.endDebugSession(handle);
     expect(manager.state).toBe('IDLE');
   });
+
+  it('throws ElevationRequiredError when the watchdog exits before connecting', async () => {
+    const { manager } = makeManager({
+      // A non-elevated watchdog exits immediately (ERROR_ACCESS_DENIED) without
+      // ever creating the named pipe.
+      spawnWatchdog: async () => ({
+        pid: -1,
+        kill() {},
+        exited: Promise.resolve(),
+      }),
+      clientFactory: () => ({
+        // The raw pipe connect would fail with ENOENT after the watchdog is
+        // gone; model it as a delayed rejection the exit race must beat.
+        async connect() {
+          await new Promise((r) => setTimeout(r, 100));
+          throw new Error('pipe connect failed: connect ENOENT');
+        },
+        async registerRegions() {},
+        async heartbeat() {},
+        async status() {
+          return { hooked: false, regions: 0 };
+        },
+        async shutdown() {},
+        close() {},
+      }),
+    });
+    await expect(
+      manager.startDebugSession([{ x: 0, y: 0, w: 1, h: 1, id: 'r' }]),
+    ).rejects.toBeInstanceOf(ElevationRequiredError);
+    expect(manager.state).toBe('IDLE');
+  });
 });
 
 // ---------------------------------------------------------------------------
