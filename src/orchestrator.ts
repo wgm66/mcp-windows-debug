@@ -151,6 +151,8 @@ export interface WindowProbe {
   getWindowRect(hwnd: number): Rect | null;
   getForegroundWindow(): number;
   isSecureDesktop(): boolean;
+  /** Check if a window handle is still valid (used by sandbox mode freshness gate). */
+  isWindow?(hwnd: number): boolean;
 }
 
 /** Injected time/timer surface so governor timing is deterministic in tests. */
@@ -213,6 +215,8 @@ export interface OrchestratorOptions {
   sessionCapMs?: number;
   maxConsecutiveFailures?: number;
   onNotify?: (event: OrchestratorEvent) => void;
+  /** When true, disables Default-desktop freshness gate + secure-desktop check (sandbox mode). */
+  sandboxMode?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -350,6 +354,8 @@ export class Orchestrator {
   private readonly sessionCapMs: number;
   private readonly maxConsecutiveFailures: number;
   private readonly onNotify: ((event: OrchestratorEvent) => void) | undefined;
+  private readonly sandboxMode: boolean;
+  private readonly isWindowFn: (hwnd: number) => boolean;
 
   private _state: OrchestratorState = 'IDLE';
   private targetHwnd: number | null = null;
@@ -386,6 +392,8 @@ export class Orchestrator {
     this.maxConsecutiveFailures =
       options.maxConsecutiveFailures ?? DEFAULT_MAX_CONSECUTIVE_FAILURES;
     this.onNotify = options.onNotify;
+    this.sandboxMode = options.sandboxMode ?? false;
+    this.isWindowFn = options.probe.isWindow?.bind(options.probe) ?? ((_n: number) => true);
     this.latestContext = this.buildContext();
   }
 
@@ -489,24 +497,35 @@ export class Orchestrator {
       throw new RateLimitExceededError();
     }
 
-    if (this.probe.isSecureDesktop()) {
+    if (!this.sandboxMode && this.probe.isSecureDesktop()) {
       this.pause('secure_desktop');
       this.log('execute_action', { action, error: 'SecureDesktopError' }, false);
       throw new SecureDesktopError();
     }
 
-    // Freshness gate: re-capture + foreground check against the session target.
+    // Freshness gate: sandbox mode uses hwnd-validity (IsWindow), non-sandbox uses foreground check.
     const target = this.targetHwnd;
-    await this.captureFresh();
-    if (this.probe.getForegroundWindow() !== target) {
-      this.recordFailure();
-      if (!this.paused) this.transition('MONITORING');
-      this.log(
-        'execute_action',
-        { action, error: 'StaleStateError', foreground: this.probe.getForegroundWindow(), target },
-        false,
-      );
-      throw new StaleStateError();
+    if (this.sandboxMode) {
+      // Sandbox: just check IsWindow(target) — the target is on the private desktop,
+      // and we can't query the Default-desktop foreground (it would never match).
+      if (!this.isWindowFn(target)) {
+        this.recordFailure();
+        if (!this.paused) this.transition('MONITORING');
+        this.log('execute_action', { action, error: 'StaleStateError', sandboxMode: true }, false);
+        throw new StaleStateError();
+      }
+    } else {
+      await this.captureFresh();
+      if (this.probe.getForegroundWindow() !== target) {
+        this.recordFailure();
+        if (!this.paused) this.transition('MONITORING');
+        this.log(
+          'execute_action',
+          { action, error: 'StaleStateError', foreground: this.probe.getForegroundWindow(), target },
+          false,
+        );
+        throw new StaleStateError();
+      }
     }
 
     this.transition('ACTING');
