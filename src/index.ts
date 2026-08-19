@@ -9,6 +9,14 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 
 import { buildServer } from './server';
 
+export type {
+  SandboxConfig,
+  SandboxHandle,
+  SandboxProvider,
+  NotImplementedError,
+} from './platform/sandbox';
+export { LocalRdpSandbox } from './sandbox/rdp-sandbox';
+
 async function main(): Promise<void> {
   const server = buildServer();
   const transport = new StdioServerTransport();
