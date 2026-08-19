@@ -365,7 +365,7 @@ export class DebugSessionManager {
    * @throws ElevationRequiredError (or the spawn error) if the watchdog cannot
    *         be spawned or reached.
    */
-  async startDebugSession(regions: Region[]): Promise<DebugSessionHandle> {
+  async startDebugSession(regions: Region[], sandbox?: 'desktop' | 'rdp'): Promise<DebugSessionHandle> {
     if (regions.length === 0) {
       this.log('start_debug_session', { regions: 0, error: 'AbortButtonsRequiredError' }, false);
       throw new AbortButtonsRequiredError();
@@ -408,9 +408,18 @@ export class DebugSessionManager {
       this.startHeartbeat();
       this.log(
         'start_debug_session',
-        { regions: regions.length, spawned: proc !== null, pid: proc?.pid ?? null },
+        { regions: regions.length, spawned: proc !== null, pid: proc?.pid ?? null, sandbox: sandbox ?? 'none' },
         true,
       );
+
+      // If sandbox mode requested, flag the session so injectGuarded uses the hwnd-validity gate.
+      if (sandbox === 'desktop') {
+        this.active.sandboxMode = true;
+      } else if (sandbox === 'rdp') {
+        // RDP backend is reserved (not implemented); fail with NotImplementedError.
+        const { NotImplementedError } = await import('./platform/sandbox');
+        throw new NotImplementedError('LocalRdpSandbox is not implemented; use sandbox: desktop instead');
+      }
 
       // Watch the process for an unexpected exit (pre-started watchdogs have
       // no proc and are monitored purely via the heartbeat).

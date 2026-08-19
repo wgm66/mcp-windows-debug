@@ -283,11 +283,11 @@ export function buildServer(options: BuildServerOptions = {}): McpServer {
     {
       description:
         'Start a debug session: spawn/attach the safety watchdog and register protected abort regions.',
-      inputSchema: { regions: z.array(z.object(REGION_SHAPE)) },
+      inputSchema: { regions: z.array(z.object(REGION_SHAPE)), sandbox: z.enum(['desktop', 'rdp']).optional() },
     },
-    async ({ regions }) => {
+    async ({ regions, sandbox }) => {
       try {
-        const handle = await safety.startDebugSession(regions);
+        const handle = await safety.startDebugSession(regions, sandbox);
         activeHandle = handle;
         // Best-effort: begin auto-monitoring the current foreground window.
         // If no target window is resolvable, the session still works manually.
