@@ -1,5 +1,9 @@
 # mcp-windows-debug
 
+[![CI](https://github.com/wgm66/mcp-windows-debug/actions/workflows/ci.yml/badge.svg)](https://github.com/wgm66/mcp-windows-debug/actions/workflows/ci.yml)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue.svg)](https://www.typescriptlang.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 A TypeScript/Node.js MCP server that plugs into OpenCode over stdio and gives
 the model eyes and hands on a Windows machine: it reads project files, captures
 screenshots, moves the mouse and types keys, and runs an auto-debug loop against
@@ -15,6 +19,16 @@ guard. Details are in the Security model section below.
 
 This is a Windows-only v1. macOS and Linux backends plug in later behind the
 same provider interfaces; they are not implemented yet.
+
+## Quick start
+
+```powershell
+git clone https://github.com/wgm66/mcp-windows-debug.git
+cd mcp-windows-debug
+npm install && npm run build
+cd src\watchdog && build.bat   # build the C++ watchdog (MSVC required)
+node dist\index.js --validate-config  # verify your OpenCode config
+```
 
 ## Installation
 
@@ -137,9 +151,10 @@ Ten tools are registered.
 | `mouse_move` | Move the cursor to logical screen coordinates. |
 | `key_press` | Press a key, optionally holding modifiers. |
 | `type_text` | Type a text string as keyboard input. |
-| `start_debug_session` | Spawn or attach the watchdog and register protected abort regions. |
+| `start_debug_session` | Spawn or attach the watchdog and register protected abort regions. Accepts optional `sandbox: 'desktop'` for isolated PostMessage injection. |
 | `end_debug_session` | End the active session and shut down the watchdog. |
 | `execute_action` | Execute a client-decided action inside the active session. |
+| `inspect_element` | Enumerate visible UI elements (name, role, rect, enabled) via UIAutomation tree walker. |
 
 The four input tools (`mouse_click`, `mouse_move`, `key_press`, `type_text`)
 all route through the safety layer's `injectGuarded` gate. Calling them with no
@@ -259,3 +274,25 @@ session, or launch OpenCode from an elevated terminal.
 expected behavior for a non-elevated shell. The watchdog refuses to run without
 admin and prints `ERROR_ACCESS_DENIED` with exit code 1, so there is no silent
 no-op. Run it from an elevated PowerShell instead.
+
+## Session recording
+
+Sessions can be recorded as JSON transcripts for later replay. The recorder
+hooks into the audit log and captures every tool call (name, args, result,
+timestamp) without keystroke content (data minimization). Transcripts are
+saved to `.omo/recordings/session-<id>.json`.
+
+```powershell
+# A session transcript can be replayed programmatically:
+node -e "const { SessionRecorder } = require('./dist/recording'); SessionRecorder.replay('.omo/recordings/session-xxx.json', async (call) => { console.log(call.toolName, call.args); })"
+```
+
+## UIAutomation (accessibility API)
+
+The `inspect_element` tool enumerates visible UI elements via the
+UIAutomation tree walker (competitor parity with terminator-mcp-agent and
+Windows MCP Inspector). In v1, this is a stub that returns elements from the
+injected deps seam; full COM interop requires a native N-API addon (future
+work). The `UIAutomationProvider` class implements `InputProvider` but throws
+`UIAutomationError` for injection methods in v1 — use `SendInput` or
+`PostMessage` paths for actual injection.
