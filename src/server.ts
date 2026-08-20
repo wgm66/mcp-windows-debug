@@ -42,6 +42,7 @@ import type { InputProvider } from './platform/input';
 import type { ScreenProvider } from './platform/screen';
 import { DebugSessionManager, type DebugSessionHandle } from './safety';
 import { WindowsScreenProvider } from './screenshot';
+import { UIAutomationProvider } from './uiautomation';
 
 const SERVER_NAME = 'mcp-windows-debug';
 const SERVER_VERSION = '0.1.0';
@@ -337,6 +338,34 @@ export function buildServer(options: BuildServerOptions = {}): McpServer {
   );
 
   // -- Orchestration (todo 10) -------------------------------------------------
+
+  server.registerTool(
+    'inspect_element',
+    {
+      description:
+        'Enumerate visible UI elements on the target window via UIAutomation tree walker. Returns name, automationId, role, rect, enabled, focused for each element.',
+      inputSchema: { title: z.string().optional(), filter: z.string().optional() },
+    },
+    async ({ filter }) => {
+      try {
+        const uia = new UIAutomationProvider({
+          targetHwnd: 0, // v1 stub: no real COM interop yet
+          sessionId: sessionId,
+        });
+        const elements = uia.inspectElements(filter ?? undefined);
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(elements),
+            },
+          ],
+        };
+      } catch (err) {
+        return toolError(err);
+      }
+    },
+  );
 
   server.registerTool(
     'execute_action',
