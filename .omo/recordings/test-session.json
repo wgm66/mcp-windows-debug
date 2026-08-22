@@ -1,0 +1,24 @@
+{
+  "sessionId": "test-session",
+  "entries": [
+    {
+      "id": 1,
+      "timestamp": "2026-08-20T16:51:09.603Z",
+      "toolName": "read_file",
+      "args": {
+        "path": "test.txt"
+      },
+      "result": {}
+    },
+    {
+      "id": 2,
+      "timestamp": "2026-08-20T16:51:09.604Z",
+      "toolName": "mouse_click",
+      "args": {
+        "x": 1,
+        "y": 2
+      },
+      "result": {}
+    }
+  ]
+}

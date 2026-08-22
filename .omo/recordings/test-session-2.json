@@ -1,0 +1,12 @@
+{
+  "sessionId": "test-session-2",
+  "entries": [
+    {
+      "id": 1,
+      "timestamp": "2026-08-20T16:51:09.608Z",
+      "toolName": "type_text",
+      "args": {},
+      "result": {}
+    }
+  ]
+}

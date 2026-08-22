@@ -1,0 +1,39 @@
+{
+  "schema_version": 2,
+  "active_work_id": "competitive-improvements",
+  "works": {
+    "competitive-improvements": {
+      "work_id": "competitive-improvements",
+      "active_plan": "G:\\工程开发\\AI全场景图形化调试\\.omo\\plans\\competitive-improvements.md",
+      "plan_name": "competitive-improvements",
+      "status": "completed",
+      "started_at": "2026-08-19T15:30:00.000Z",
+      "updated_at": "2026-08-20T16:30:30.897Z",
+      "session_ids": [
+        "opencode:ses_ff11fefefffeaq03n55TmElxra"
+      ],
+      "session_origins": {
+        "opencode:ses_ff11fefefffeaq03n55TmElxra": "direct"
+      },
+      "agent": "atlas",
+      "task_sessions": {},
+      "ended_at": "2026-08-20T16:30:30.897Z",
+      "elapsed_ms": 90030897
+    }
+  },
+  "active_plan": "G:\\工程开发\\AI全场景图形化调试\\.omo\\plans\\competitive-improvements.md",
+  "started_at": "2026-08-19T15:30:00.000Z",
+  "status": "completed",
+  "updated_at": "2026-08-20T16:30:30.897Z",
+  "session_ids": [
+    "opencode:ses_ff11fefefffeaq03n55TmElxra"
+  ],
+  "session_origins": {
+    "opencode:ses_ff11fefefffeaq03n55TmElxra": "direct"
+  },
+  "plan_name": "competitive-improvements",
+  "task_sessions": {},
+  "agent": "atlas",
+  "ended_at": "2026-08-20T16:30:30.897Z",
+  "elapsed_ms": 90030897
+}
