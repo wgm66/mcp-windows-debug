@@ -595,7 +595,7 @@ export class DebugSessionManager {
 
     if (session) {
       const { client, proc } = session;
-      if (kind === 'user') {
+      if (kind === 'user' && client) {
         await this.gracefulShutdown(client, proc);
       }
       if (proc) {
@@ -606,7 +606,7 @@ export class DebugSessionManager {
         }
       }
       try {
-        client.close();
+        if (client) client.close();
       } catch {
         // best effort
       }
