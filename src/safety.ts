@@ -383,6 +383,20 @@ export class DebugSessionManager {
     let proc: SpawnedProcess | null = null;
     let client: WatchdogClientLike | null = null;
     try {
+      // Sandbox mode: skip watchdog spawn entirely. PostMessage bypasses LL hooks,
+      // so the watchdog provides no input filtering in sandbox mode. Safety comes
+      // from private-desktop isolation + hwnd-validity gate, not the watchdog.
+      if (sandbox === 'desktop') {
+        // No watchdog process, no IPC client, no heartbeat.
+        this.active = { handle, client: null as unknown as WatchdogClientLike, proc: null, targetWindow: null, sandboxMode: true, sandboxDesktopHandle: null };
+        this.transition('ACTIVE');
+        this.log('start_debug_session', { regions: regions.length, spawned: false, sandbox: 'desktop', watchdog: 'skipped' }, true);
+        return handle;
+      } else if (sandbox === 'rdp') {
+        const { NotImplementedError } = await import('./platform/sandbox');
+        throw new NotImplementedError('LocalRdpSandbox is not implemented; use sandbox: desktop instead');
+      }
+
       proc = await this.spawnWatchdog({ pipeId, token });
       client = this.clientFactory(pipeId, token);
       if (proc === null) {
@@ -411,15 +425,6 @@ export class DebugSessionManager {
         { regions: regions.length, spawned: proc !== null, pid: proc?.pid ?? null, sandbox: sandbox ?? 'none' },
         true,
       );
-
-      // If sandbox mode requested, flag the session so injectGuarded uses the hwnd-validity gate.
-      if (sandbox === 'desktop') {
-        this.active.sandboxMode = true;
-      } else if (sandbox === 'rdp') {
-        // RDP backend is reserved (not implemented); fail with NotImplementedError.
-        const { NotImplementedError } = await import('./platform/sandbox');
-        throw new NotImplementedError('LocalRdpSandbox is not implemented; use sandbox: desktop instead');
-      }
 
       // Watch the process for an unexpected exit (pre-started watchdogs have
       // no proc and are monitored purely via the heartbeat).
