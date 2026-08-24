@@ -134,7 +134,7 @@ describe('MCP stdio server', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('(a) tools/list returns the 10 registered tools', async () => {
+  it('(a) tools/list returns the 11 registered tools', async () => {
     const res = await client.request('tools/list', {});
     expect(res.error).toBeUndefined();
     const tools = (res.result as { tools: Array<{ name: string }> }).tools;
@@ -143,6 +143,7 @@ describe('MCP stdio server', () => {
       'capture_window',
       'end_debug_session',
       'execute_action',
+      'inspect_element',
       'key_press',
       'list_directory',
       'mouse_click',
@@ -153,7 +154,7 @@ describe('MCP stdio server', () => {
     ]);
   });
 
-  it('(b) resources/list + resources/templates/list cover the 3 registered resources', async () => {
+  it('(b) resources/list + resources/templates/list cover the 4 registered resources', async () => {
     const list = await client.request('resources/list', {});
     expect(list.error).toBeUndefined();
     const resources = (list.result as { resources: Array<{ uri: string }> }).resources;
@@ -164,7 +165,7 @@ describe('MCP stdio server', () => {
     expect(tpl.error).toBeUndefined();
     const templates = (tpl.result as { resourceTemplates: Array<{ uriTemplate: string }> })
       .resourceTemplates;
-    expect(templates.map((t) => t.uriTemplate)).toEqual(['screenshot://monitor/{index}']);
+    expect(templates.map((t) => t.uriTemplate)).toEqual(['screenshot://monitor/{index}', 'screenshot://window/{title}']);
   });
 
   it('(c) read_file returns the temp file content', async () => {
