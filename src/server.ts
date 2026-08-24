@@ -443,5 +443,24 @@ export function buildServer(options: BuildServerOptions = {}): McpServer {
     }),
   );
 
+  server.registerResource(
+    'screenshot-window',
+    new ResourceTemplate('screenshot://window/{title}', { list: undefined }),
+    {
+      title: 'Window screenshot',
+      description: 'PNG capture of a specific window by exact title (empty title = frontmost window). Does not affect other windows.',
+      mimeType: 'image/png',
+    },
+    async (uri, variables): Promise<ReadResourceResult> => {
+      const title = firstVariable(variables.title) ?? '';
+      const result = await screens.captureWindow(title);
+      return {
+        contents: [
+          { uri: uri.toString(), mimeType: 'image/png', blob: result.png.toString('base64') },
+        ],
+      };
+    },
+  );
+
   return server;
 }
