@@ -308,6 +308,7 @@ interface RealContext {
 }
 
 let realContext: RealContext | undefined;
+let dpiAwarenessSet = false;
 
 function initRealContext(): RealContext {
   const user32 = koffi.load('user32.dll');
@@ -317,7 +318,10 @@ function initRealContext(): RealContext {
     'bool SetProcessDpiAwarenessContext(void *value)',
   );
   // Per-monitor-aware-v2, once per process (idempotent, best-effort).
-  SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+  if (!dpiAwarenessSet) {
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    dpiAwarenessSet = true;
+  }
 
   const SendInput = user32.func(
     'uint32 SendInput(uint32 cInputs, INPUT *pInputs, int cbSize)',
