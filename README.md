@@ -275,6 +275,19 @@ expected behavior for a non-elevated shell. The watchdog refuses to run without
 admin and prints `ERROR_ACCESS_DENIED` with exit code 1, so there is no silent
 no-op. Run it from an elevated PowerShell instead.
 
+## Playwright MCP compatibility
+
+The server is compatible with the Playwright MCP server out of the box —
+no flags or configuration changes are needed. `SetProcessDpiAwarenessContext`
+is deferred to the first actual input call (lazy init), so two MCP servers
+running side by side do not interfere with each other's DPI settings.
+
+When `windows-debug` first executes an input tool (`mouse_click`, `key_press`,
+etc.), it sets per-monitor DPI awareness at that point — which is correct,
+because at that moment it is `windows-debug` doing the injection. Before any
+input call, the process DPI mode is untouched, so Playwright's coordinate
+mapping remains stable.
+
 ## Session recording
 
 Sessions can be recorded as JSON transcripts for later replay. The recorder

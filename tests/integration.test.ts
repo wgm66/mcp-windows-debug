@@ -289,7 +289,7 @@ describe('MCP stdio — lifecycle + denylist file access (default server)', () =
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('(a) initialize exposes the server identity and tools/list has 10 tools', async () => {
+  it('(a) initialize exposes the server identity and tools/list has 11 tools', async () => {
     const init = await client.request('initialize', {
       protocolVersion: '2024-11-05',
       capabilities: {},
@@ -309,6 +309,7 @@ describe('MCP stdio — lifecycle + denylist file access (default server)', () =
       'capture_window',
       'end_debug_session',
       'execute_action',
+      'inspect_element',
       'key_press',
       'list_directory',
       'mouse_click',
