@@ -69,6 +69,8 @@ export interface BuildServerOptions {
   safety?: DebugSessionManager;
   /** The auto-debug orchestrator; constructed (and wired) by default. */
   orchestrator?: Orchestrator;
+  /** When true, skip WindowsInputProvider init (avoids SetProcessDpiAwarenessContext + SendInput). Input tools return 'disabled' errors. Use when Playwright MCP handles input. */
+  noInput?: boolean;
 }
 
 /** Extract a human-readable message from any thrown value. */
@@ -106,6 +108,22 @@ function firstVariable(value: string | string[]): string {
   return Array.isArray(value) ? (value[0] ?? '') : value;
 }
 
+/** A no-op InputProvider that returns structured errors instead of injecting input. */
+class DisabledInputProvider implements InputProvider {
+  async mouseClick(): Promise<void> {
+    throw new Error('input disabled: use --no-input to skip WindowsInputProvider init (e.g. when Playwright MCP handles input)');
+  }
+  async mouseMove(): Promise<void> {
+    throw new Error('input disabled: use --no-input');
+  }
+  async keyPress(): Promise<void> {
+    throw new Error('input disabled: use --no-input');
+  }
+  async typeText(): Promise<void> {
+    throw new Error('input disabled: use --no-input');
+  }
+}
+
 /**
  * The MCP server wiring: every tool/resource is registered against the
  * providers passed in (or constructed by default).
@@ -118,7 +136,9 @@ export function buildServer(options: BuildServerOptions = {}): McpServer {
     options.fileProvider ??
     new WindowsFileProvider({ sessionId, mode: fileMode, allowlistRoots: options.allowlistRoots });
   const screens = options.screenProvider ?? new WindowsScreenProvider({ sessionId });
-  const input = options.inputProvider ?? new WindowsInputProvider({ sessionId });
+  const input: InputProvider = options.inputProvider ?? (options.noInput
+    ? new DisabledInputProvider()
+    : new WindowsInputProvider({ sessionId }));
   const safety = options.safety ?? new DebugSessionManager({ sessionId });
 
   const server = new McpServer(

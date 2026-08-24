@@ -97,7 +97,8 @@ function validateConfig(): void {
 }
 
 async function main(): Promise<void> {
-  const server = buildServer();
+  const noInput = process.argv.includes('--no-input');
+  const server = buildServer({ noInput });
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
